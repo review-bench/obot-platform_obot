@@ -25,7 +25,6 @@ import (
 type Dispatcher struct {
 	invoker              *invoke.Invoker
 	client               kclient.Client
-	gptscriptClient      *gptscript.GPTScript
 	gatewayClient        *client.Client
 	authLock             *sync.RWMutex
 	authURLs             map[string]url.URL
@@ -36,12 +35,11 @@ type Dispatcher struct {
 	fileScannerURLs      map[string]url.URL
 }
 
-func New(invoker *invoke.Invoker, c kclient.Client, gptscriptClient *gptscript.GPTScript, gatewayClient *client.Client, postgresDSN string) *Dispatcher {
+func New(invoker *invoke.Invoker, c kclient.Client, gatewayClient *client.Client, postgresDSN string) *Dispatcher {
 	d := &Dispatcher{
 		invoker:         invoker,
 		client:          c,
 		gatewayClient:   gatewayClient,
-		gptscriptClient: gptscriptClient,
 		modelLock:       new(sync.RWMutex),
 		modelURLs:       make(map[string]url.URL),
 		authLock:        new(sync.RWMutex),
@@ -205,7 +203,7 @@ func (d *Dispatcher) GetConfiguredAuthProvider(ctx context.Context) (string, err
 	}
 
 	for _, authProvider := range authProviders.Items {
-		if d.isAuthProviderConfigured(ctx, d.gptscriptClient, authProvider) {
+		if isAuthProviderConfigured(authProvider) {
 			return authProvider.Name, nil
 		}
 	}
@@ -213,25 +211,10 @@ func (d *Dispatcher) GetConfiguredAuthProvider(ctx context.Context) (string, err
 	return "", nil
 }
 
-// isAuthProviderConfigured checks an auth provider to see if all of its required environment variables are set.
-// Errors are ignored and reported as the auth provider is not configured.
-// Returns: isConfigured (bool)
-func (d *Dispatcher) isAuthProviderConfigured(ctx context.Context, gptscriptClient *gptscript.GPTScript, toolRef v1.ToolReference) bool {
-	if toolRef.Status.Tool == nil {
-		return false
-	}
-
-	credEnv, err := CredentialEnvForAuthProvider(ctx, gptscriptClient, toolRef)
-	if err != nil {
-		return false
-	}
-
-	aps, err := providers.ConvertAuthProviderToolRef(toolRef, credEnv)
-	if err != nil {
-		return false
-	}
-
-	return aps.Configured
+// isAuthProviderConfigured reports whether the auth provider controller has marked
+// the provider as configured.
+func isAuthProviderConfigured(toolRef v1.ToolReference) bool {
+	return toolRef.Status.Tool != nil && toolRef.Status.Configured
 }
 
 // GetAuthProviderConfigEnv returns the value of the specified environment variable from the given auth providers config.

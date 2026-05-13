@@ -51,7 +51,7 @@ type ToolReferenceSpec struct {
 	Builtin      bool              `json:"builtin,omitempty"`
 	Reference    string            `json:"reference,omitempty"`
 	Active       *bool             `json:"active,omitempty"`
-	ForceRefresh metav1.Time       `json:"forceRefresh,omitempty"`
+	ForceRefresh metav1.Time       `json:"forceRefresh,omitzero"`
 }
 
 type ToolShortDescription struct {
@@ -71,6 +71,7 @@ type ToolReferenceStatus struct {
 	Commit             string                `json:"commit,omitempty"`
 	ObservedGeneration int64                 `json:"observedGeneration,omitempty"`
 	Tool               *ToolShortDescription `json:"tool,omitempty"`
+	Configured         bool                  `json:"configured,omitempty"`
 	Error              string                `json:"error,omitempty"`
 }
 

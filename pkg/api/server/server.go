@@ -22,6 +22,7 @@ import (
 	"github.com/obot-platform/obot/pkg/api/server/requestinfo"
 	"github.com/obot-platform/obot/pkg/auth"
 	gclient "github.com/obot-platform/obot/pkg/gateway/client"
+	"github.com/obot-platform/obot/pkg/license"
 	"github.com/obot-platform/obot/pkg/proxy"
 	"github.com/obot-platform/obot/pkg/storage"
 	"go.opentelemetry.io/contrib/instrumentation/net/http/otelhttp"
@@ -33,38 +34,40 @@ import (
 var log = logger.Package()
 
 type Server struct {
-	storageClient  storage.Client
-	gatewayClient  *gclient.Client
-	gptClient      *gptscript.GPTScript
-	localK8sClient kclient.Client
-	obotNamespace  string
-	authenticator  *authn.Authenticator
-	authorizer     *authz.Authorizer
-	proxyManager   *proxy.Manager
-	auditLogger    audit.Logger
-	rateLimiter    *ratelimiter.RateLimiter
-	baseURL        string
-	registryNoAuth bool
+	storageClient           storage.Client
+	gatewayClient           *gclient.Client
+	gptClient               *gptscript.GPTScript
+	localK8sClient          kclient.Client
+	obotNamespace           string
+	authenticator           *authn.Authenticator
+	authorizer              *authz.Authorizer
+	proxyManager            *proxy.Manager
+	auditLogger             audit.Logger
+	rateLimiter             *ratelimiter.RateLimiter
+	baseURL                 string
+	registryNoAuth          bool
+	providerEntitlementGate *license.ProviderEntitlementGate
 
 	mux         *http.ServeMux
 	otelHandler http.Handler
 }
 
-func NewServer(storageClient storage.Client, gatewayClient *gclient.Client, gptClient *gptscript.GPTScript, localK8sClient kclient.Client, obotNamespace string, authn *authn.Authenticator, authz *authz.Authorizer, proxyManager *proxy.Manager, auditLogger audit.Logger, rateLimiter *ratelimiter.RateLimiter, baseURL string, registryNoAuth bool) *Server {
+func NewServer(storageClient storage.Client, gatewayClient *gclient.Client, gptClient *gptscript.GPTScript, localK8sClient kclient.Client, obotNamespace string, authn *authn.Authenticator, authz *authz.Authorizer, proxyManager *proxy.Manager, auditLogger audit.Logger, rateLimiter *ratelimiter.RateLimiter, baseURL string, registryNoAuth bool, licenseProvider *license.KeygenProvider) *Server {
 	s := &Server{
-		storageClient:  storageClient,
-		gatewayClient:  gatewayClient,
-		gptClient:      gptClient,
-		localK8sClient: localK8sClient,
-		obotNamespace:  obotNamespace,
-		authenticator:  authn,
-		authorizer:     authz,
-		proxyManager:   proxyManager,
-		baseURL:        baseURL + "/api",
-		auditLogger:    auditLogger,
-		rateLimiter:    rateLimiter,
-		registryNoAuth: registryNoAuth,
-		mux:            http.NewServeMux(),
+		storageClient:           storageClient,
+		gatewayClient:           gatewayClient,
+		gptClient:               gptClient,
+		localK8sClient:          localK8sClient,
+		obotNamespace:           obotNamespace,
+		authenticator:           authn,
+		authorizer:              authz,
+		proxyManager:            proxyManager,
+		baseURL:                 baseURL + "/api",
+		auditLogger:             auditLogger,
+		rateLimiter:             rateLimiter,
+		registryNoAuth:          registryNoAuth,
+		providerEntitlementGate: license.NewProviderEntitlementGate(licenseProvider, storageClient),
+		mux:                     http.NewServeMux(),
 	}
 	s.otelHandler = otelhttp.NewHandler(
 		s.mux,
@@ -209,17 +212,20 @@ func (s *Server) Wrap(f api.HandlerFunc) http.HandlerFunc {
 			rw.Header().Set("Expires", "0")
 		}
 
-		err = f(api.Context{
-			ResponseWriter: rw,
-			Request:        req,
-			GPTClient:      s.gptClient,
-			Storage:        s.storageClient,
-			GatewayClient:  s.gatewayClient,
-			User:           user,
-			APIBaseURL:     s.baseURL,
-			LocalK8sClient: s.localK8sClient,
-			ObotNamespace:  s.obotNamespace,
-		})
+		err = s.providerEntitlementGate.Check(req)
+		if err == nil {
+			err = f(api.Context{
+				ResponseWriter: rw,
+				Request:        req,
+				GPTClient:      s.gptClient,
+				Storage:        s.storageClient,
+				GatewayClient:  s.gatewayClient,
+				User:           user,
+				APIBaseURL:     s.baseURL,
+				LocalK8sClient: s.localK8sClient,
+				ObotNamespace:  s.obotNamespace,
+			})
+		}
 		if errHTTP := (*types.ErrHTTP)(nil); errors.As(err, &errHTTP) {
 			http.Error(rw, errHTTP.Message, errHTTP.Code)
 		} else if errStatus := (*apierrors.StatusError)(nil); errors.As(err, &errStatus) {
