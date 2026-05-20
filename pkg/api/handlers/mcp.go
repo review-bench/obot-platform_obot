@@ -13,12 +13,13 @@ import (
 
 	"golang.org/x/sync/errgroup"
 
-	"github.com/gptscript-ai/go-gptscript"
 	"github.com/gptscript-ai/gptscript/pkg/hash"
 	nmcp "github.com/obot-platform/nanobot/pkg/mcp"
 	"github.com/obot-platform/obot/apiclient/types"
 	"github.com/obot-platform/obot/pkg/accesscontrolrule"
 	"github.com/obot-platform/obot/pkg/api"
+	gateway "github.com/obot-platform/obot/pkg/gateway/client"
+	gatewaytypes "github.com/obot-platform/obot/pkg/gateway/types"
 	"github.com/obot-platform/obot/pkg/mcp"
 	v1 "github.com/obot-platform/obot/pkg/storage/apis/obot.obot.ai/v1"
 	"github.com/obot-platform/obot/pkg/system"
@@ -232,7 +233,7 @@ func (m *MCPHandler) ListServer(req api.Context) error {
 		}
 	}
 
-	creds, err := req.GPTClient.ListCredentials(req.Context(), gptscript.ListCredentialsOptions{
+	creds, err := req.GatewayClient.ListCredentials(req.Context(), gateway.ListCredentialsOptions{
 		CredentialContexts: credCtxs,
 	})
 	if err != nil {
@@ -241,12 +242,12 @@ func (m *MCPHandler) ListServer(req api.Context) error {
 
 	credMap := make(map[string]map[string]string, len(creds))
 	for _, cred := range creds {
-		if _, ok := credMap[cred.ToolName]; !ok {
-			c, err := req.GPTClient.RevealCredential(req.Context(), []string{cred.Context}, cred.ToolName)
-			if err != nil && !errors.As(err, &gptscript.ErrNotFound{}) {
+		if _, ok := credMap[cred.Name]; !ok {
+			c, err := req.GatewayClient.RevealCredential(req.Context(), []string{cred.Context}, cred.Name)
+			if err != nil && !errors.As(err, &gateway.CredentialNotFoundError{}) {
 				return fmt.Errorf("failed to find credential: %w", err)
 			}
-			credMap[cred.ToolName] = c.Env
+			credMap[cred.Name] = c.Secrets
 		}
 	}
 
@@ -348,12 +349,12 @@ func (m *MCPHandler) GetServer(req api.Context) error {
 		credCtxs = []string{fmt.Sprintf("%s-%s", req.User.GetUID(), server.Name)}
 	}
 
-	cred, err := req.GPTClient.RevealCredential(req.Context(), credCtxs, server.Name)
-	if err != nil && !errors.As(err, &gptscript.ErrNotFound{}) {
+	cred, err := req.GatewayClient.RevealCredential(req.Context(), credCtxs, server.Name)
+	if err != nil && !errors.As(err, &gateway.CredentialNotFoundError{}) {
 		return fmt.Errorf("failed to find credential: %w", err)
 	}
 
-	mergedEnv, err := mcp.MergeBoundCreds(req.Context(), req.LocalK8sClient, req.ObotNamespace, server.Spec.Manifest.Env, server.Spec.Manifest.RemoteConfig, cred.Env)
+	mergedEnv, err := mcp.MergeBoundCreds(req.Context(), req.LocalK8sClient, req.ObotNamespace, server.Spec.Manifest.Env, server.Spec.Manifest.RemoteConfig, cred.Secrets)
 	if err != nil {
 		return fmt.Errorf("failed to resolve secret bindings: %w", err)
 	}
@@ -1087,8 +1088,8 @@ func serverFromMCPServerInstance(req api.Context, instance v1.MCPServerInstance)
 		scope = instance.Spec.UserID
 	}
 
-	cred, err := req.GPTClient.RevealCredential(req.Context(), []string{credCtx}, server.Name)
-	if err != nil && !errors.As(err, &gptscript.ErrNotFound{}) {
+	cred, err := req.GatewayClient.RevealCredential(req.Context(), []string{credCtx}, server.Name)
+	if err != nil && !errors.As(err, &gateway.CredentialNotFoundError{}) {
 		return server, mcp.ServerConfig{}, fmt.Errorf("failed to find credential: %w", err)
 	}
 
@@ -1114,18 +1115,18 @@ func serverFromMCPServerInstance(req api.Context, instance v1.MCPServerInstance)
 		}
 	}
 
-	tokenExchangeCred, err := req.GPTClient.RevealCredential(req.Context(), []string{server.Name}, server.Name)
+	tokenExchangeCred, err := req.GatewayClient.RevealCredential(req.Context(), []string{server.Name}, server.Name)
 	if err != nil {
 		return server, mcp.ServerConfig{}, fmt.Errorf("failed to find token exchange credential: %w", err)
 	}
 
-	mergedEnv, err := mcp.MergeBoundCreds(req.Context(), req.LocalK8sClient, req.ObotNamespace, server.Spec.Manifest.Env, server.Spec.Manifest.RemoteConfig, cred.Env)
+	mergedEnv, err := mcp.MergeBoundCreds(req.Context(), req.LocalK8sClient, req.ObotNamespace, server.Spec.Manifest.Env, server.Spec.Manifest.RemoteConfig, cred.Secrets)
 	if err != nil {
 		return server, mcp.ServerConfig{}, fmt.Errorf("failed to resolve secret bindings: %w", err)
 	}
 
 	baseURL := strings.TrimSuffix(req.APIBaseURL, "/api")
-	serverConfig, missingConfig, err := mcp.ServerToServerConfig(server, instance.ValidConnectURLs(baseURL), baseURL, req.User.GetUID(), scope, catalogName, mergedEnv, tokenExchangeCred.Env)
+	serverConfig, missingConfig, err := mcp.ServerToServerConfig(server, instance.ValidConnectURLs(baseURL), baseURL, req.User.GetUID(), scope, catalogName, mergedEnv, tokenExchangeCred.Secrets)
 	if err != nil {
 		return server, mcp.ServerConfig{}, err
 	}
@@ -1192,12 +1193,12 @@ func serverConfigForAction(req api.Context, server v1.MCPServer) (mcp.ServerConf
 	// Add extracted env vars to the server definition
 	addExtractedEnvVars(&server)
 
-	cred, err := req.GPTClient.RevealCredential(req.Context(), credCtxs, server.Name)
-	if err != nil && !errors.As(err, &gptscript.ErrNotFound{}) {
+	cred, err := req.GatewayClient.RevealCredential(req.Context(), credCtxs, server.Name)
+	if err != nil && !errors.As(err, &gateway.CredentialNotFoundError{}) {
 		return mcp.ServerConfig{}, fmt.Errorf("failed to find credential: %w", err)
 	}
 
-	mergedEnv, err := mcp.MergeBoundCreds(req.Context(), req.LocalK8sClient, req.ObotNamespace, server.Spec.Manifest.Env, server.Spec.Manifest.RemoteConfig, cred.Env)
+	mergedEnv, err := mcp.MergeBoundCreds(req.Context(), req.LocalK8sClient, req.ObotNamespace, server.Spec.Manifest.Env, server.Spec.Manifest.RemoteConfig, cred.Secrets)
 	if err != nil {
 		return mcp.ServerConfig{}, fmt.Errorf("failed to resolve secret bindings: %w", err)
 	}
@@ -1234,7 +1235,7 @@ func serverConfigForAction(req api.Context, server v1.MCPServer) (mcp.ServerConf
 	}
 
 	var (
-		tokenExchangeCred gptscript.Credential
+		tokenExchangeCred gatewaytypes.Credential
 		tokenCredErr      error
 	)
 	if err = retry.OnError(kwait.Backoff{
@@ -1243,9 +1244,9 @@ func serverConfigForAction(req api.Context, server v1.MCPServer) (mcp.ServerConf
 		Factor:   2.0,
 		Jitter:   0.1,
 	}, func(err error) bool {
-		return errors.As(err, &gptscript.ErrNotFound{})
+		return errors.As(err, &gateway.CredentialNotFoundError{})
 	}, func() error {
-		tokenExchangeCred, tokenCredErr = req.GPTClient.RevealCredential(req.Context(), []string{server.Name}, server.Name)
+		tokenExchangeCred, tokenCredErr = req.GatewayClient.RevealCredential(req.Context(), []string{server.Name}, server.Name)
 		return tokenCredErr
 	}); err != nil {
 		return mcp.ServerConfig{}, fmt.Errorf("failed to find token exchange credential: %w", tokenCredErr)
@@ -1273,9 +1274,9 @@ func serverConfigForAction(req api.Context, server v1.MCPServer) (mcp.ServerConf
 			return mcp.ServerConfig{}, fmt.Errorf("failed to list component servers instances: %w", err)
 		}
 
-		serverConfig, missingConfig, err = mcp.CompositeServerToServerConfig(server, componentServers.Items, componentInstances.Items, server.ValidConnectURLs(baseURL), baseURL, req.User.GetUID(), scope, catalogName, mergedEnv, tokenExchangeCred.Env)
+		serverConfig, missingConfig, err = mcp.CompositeServerToServerConfig(server, componentServers.Items, componentInstances.Items, server.ValidConnectURLs(baseURL), baseURL, req.User.GetUID(), scope, catalogName, mergedEnv, tokenExchangeCred.Secrets)
 	} else {
-		serverConfig, missingConfig, err = mcp.ServerToServerConfig(server, server.ValidConnectURLs(baseURL), baseURL, req.User.GetUID(), scope, catalogName, mergedEnv, tokenExchangeCred.Env)
+		serverConfig, missingConfig, err = mcp.ServerToServerConfig(server, server.ValidConnectURLs(baseURL), baseURL, req.User.GetUID(), scope, catalogName, mergedEnv, tokenExchangeCred.Secrets)
 	}
 	if err != nil {
 		return mcp.ServerConfig{}, err
@@ -1593,21 +1594,21 @@ func (m *MCPHandler) CreateServer(req api.Context) error {
 	}
 
 	var (
-		cred gptscript.Credential
+		cred gatewaytypes.Credential
 		err  error
 	)
 	if catalogID != "" {
-		cred, err = req.GPTClient.RevealCredential(req.Context(), []string{fmt.Sprintf("%s-%s", catalogID, server.Name)}, server.Name)
+		cred, err = req.GatewayClient.RevealCredential(req.Context(), []string{fmt.Sprintf("%s-%s", catalogID, server.Name)}, server.Name)
 	} else if workspaceID != "" {
-		cred, err = req.GPTClient.RevealCredential(req.Context(), []string{fmt.Sprintf("%s-%s", workspaceID, server.Name)}, server.Name)
+		cred, err = req.GatewayClient.RevealCredential(req.Context(), []string{fmt.Sprintf("%s-%s", workspaceID, server.Name)}, server.Name)
 	} else {
-		cred, err = req.GPTClient.RevealCredential(req.Context(), []string{fmt.Sprintf("%s-%s", req.User.GetUID(), server.Name)}, server.Name)
+		cred, err = req.GatewayClient.RevealCredential(req.Context(), []string{fmt.Sprintf("%s-%s", req.User.GetUID(), server.Name)}, server.Name)
 	}
-	if err != nil && !errors.As(err, &gptscript.ErrNotFound{}) {
+	if err != nil && !errors.As(err, &gateway.CredentialNotFoundError{}) {
 		return fmt.Errorf("failed to find credential: %w", err)
 	}
 
-	mergedEnv, err := mcp.MergeBoundCreds(req.Context(), req.LocalK8sClient, req.ObotNamespace, server.Spec.Manifest.Env, server.Spec.Manifest.RemoteConfig, cred.Env)
+	mergedEnv, err := mcp.MergeBoundCreds(req.Context(), req.LocalK8sClient, req.ObotNamespace, server.Spec.Manifest.Env, server.Spec.Manifest.RemoteConfig, cred.Secrets)
 	if err != nil {
 		return fmt.Errorf("failed to resolve secret bindings: %w", err)
 	}
@@ -1651,15 +1652,15 @@ func (m *MCPHandler) UpdateServer(req api.Context) error {
 	}
 
 	// Shutdown any server that is using the default credentials.
-	var cred gptscript.Credential
+	var cred gatewaytypes.Credential
 	if catalogID != "" {
-		cred, err = req.GPTClient.RevealCredential(req.Context(), []string{fmt.Sprintf("%s-%s", catalogID, existing.Name)}, existing.Name)
+		cred, err = req.GatewayClient.RevealCredential(req.Context(), []string{fmt.Sprintf("%s-%s", catalogID, existing.Name)}, existing.Name)
 	} else if workspaceID != "" {
-		cred, err = req.GPTClient.RevealCredential(req.Context(), []string{fmt.Sprintf("%s-%s", workspaceID, existing.Name)}, existing.Name)
+		cred, err = req.GatewayClient.RevealCredential(req.Context(), []string{fmt.Sprintf("%s-%s", workspaceID, existing.Name)}, existing.Name)
 	} else {
-		cred, err = req.GPTClient.RevealCredential(req.Context(), []string{fmt.Sprintf("%s-%s", req.User.GetUID(), existing.Name)}, existing.Name)
+		cred, err = req.GatewayClient.RevealCredential(req.Context(), []string{fmt.Sprintf("%s-%s", req.User.GetUID(), existing.Name)}, existing.Name)
 	}
-	if err != nil && !errors.As(err, &gptscript.ErrNotFound{}) {
+	if err != nil && !errors.As(err, &gateway.CredentialNotFoundError{}) {
 		return fmt.Errorf("failed to find credential: %w", err)
 	}
 
@@ -1719,7 +1720,7 @@ func (m *MCPHandler) UpdateServer(req api.Context) error {
 		return fmt.Errorf("failed to generate slug: %w", err)
 	}
 
-	mergedEnv, err := mcp.MergeBoundCreds(req.Context(), req.LocalK8sClient, req.ObotNamespace, existing.Spec.Manifest.Env, existing.Spec.Manifest.RemoteConfig, cred.Env)
+	mergedEnv, err := mcp.MergeBoundCreds(req.Context(), req.LocalK8sClient, req.ObotNamespace, existing.Spec.Manifest.Env, existing.Spec.Manifest.RemoteConfig, cred.Secrets)
 	if err != nil {
 		return fmt.Errorf("failed to resolve secret bindings: %w", err)
 	}
@@ -1840,17 +1841,16 @@ func (m *MCPHandler) ConfigureServer(req api.Context) error {
 	}
 
 	// Allow for updating credentials. The only way to update a credential is to delete the existing one and recreate it.
-	if err := m.removeMCPServerAndCred(req.Context(), req.GPTClient, mcpServer, []string{credCtx}); err != nil {
+	if err := m.removeMCPServerAndCred(req.Context(), req.GatewayClient, mcpServer, []string{credCtx}); err != nil {
 		return err
 	}
 
 	sanitizeConfig(envVars, mcpServer.Spec.Manifest)
 
-	if err := req.GPTClient.CreateCredential(req.Context(), gptscript.Credential{
-		Context:  credCtx,
-		ToolName: mcpServer.Name,
-		Type:     gptscript.CredentialTypeTool,
-		Env:      envVars,
+	if err := req.GatewayClient.UpsertCredential(req.Context(), gatewaytypes.Credential{
+		Context: credCtx,
+		Name:    mcpServer.Name,
+		Secrets: envVars,
 	}); err != nil {
 		return fmt.Errorf("failed to create credential: %w", err)
 	}
@@ -1929,7 +1929,7 @@ func (m *MCPHandler) configureCompositeServer(req api.Context, compositeServer v
 	var (
 		manifestChanged   bool
 		oldManifestHash   = hash.Digest(compositeServer.Spec.Manifest)
-		componentCreds    = make(map[string]gptscript.Credential, len(existingServers))
+		componentCreds    = make(map[string]gatewaytypes.Credential, len(existingServers))
 		componentInstance = make(map[string]v1.MCPServerInstance, len(existingInstances))
 	)
 	for i, component := range compositeServer.Spec.Manifest.CompositeConfig.ComponentServers {
@@ -1952,11 +1952,10 @@ func (m *MCPHandler) configureCompositeServer(req api.Context, compositeServer v
 		}
 
 		if instance, instanceExists := existingInstances[componentID]; instanceExists && !component.Disabled {
-			componentCreds[componentID] = gptscript.Credential{
-				Context:  MCPServerInstanceCredentialContext(instance),
-				ToolName: instance.Name,
-				Type:     gptscript.CredentialTypeTool,
-				Env:      config.Config,
+			componentCreds[componentID] = gatewaytypes.Credential{
+				Context: MCPServerInstanceCredentialContext(instance),
+				Name:    instance.Name,
+				Secrets: config.Config,
 			}
 			componentInstance[componentID] = instance
 		}
@@ -1988,11 +1987,10 @@ func (m *MCPHandler) configureCompositeServer(req api.Context, compositeServer v
 			}
 
 			// Capture the updated credential
-			componentCreds[componentID] = gptscript.Credential{
-				Context:  fmt.Sprintf("%s-%s", req.User.GetUID(), server.Name),
-				ToolName: server.Name,
-				Type:     gptscript.CredentialTypeTool,
-				Env:      config.Config,
+			componentCreds[componentID] = gatewaytypes.Credential{
+				Context: fmt.Sprintf("%s-%s", req.User.GetUID(), server.Name),
+				Name:    server.Name,
+				Secrets: config.Config,
 			}
 		}
 
@@ -2006,7 +2004,7 @@ func (m *MCPHandler) configureCompositeServer(req api.Context, compositeServer v
 	for id, cred := range componentCreds {
 		id, cred := id, cred // Rescope variables for closure
 		g.Go(func() error {
-			modified, err := ensureCredential(ctx, req.GPTClient, cred)
+			modified, err := ensureCredential(ctx, req.GatewayClient, cred)
 			if err != nil {
 				return fmt.Errorf("failed to ensure credential for component %s: %w", id, err)
 			}
@@ -2164,7 +2162,7 @@ func (m *MCPHandler) DeconfigureServer(req api.Context) error {
 		credCtx = fmt.Sprintf("%s-%s", req.User.GetUID(), mcpServer.Name)
 	}
 
-	if err := m.removeMCPServerAndCred(req.Context(), req.GPTClient, mcpServer, []string{credCtx}); err != nil {
+	if err := m.removeMCPServerAndCred(req.Context(), req.GatewayClient, mcpServer, []string{credCtx}); err != nil {
 		return err
 	}
 
@@ -2188,7 +2186,7 @@ func (m *MCPHandler) deconfigureCompositeServer(req api.Context, compositeServer
 	for _, component := range componentServers.Items {
 		addExtractedEnvVars(&component)
 
-		if err := m.removeMCPServerAndCred(req.Context(), req.GPTClient, component, []string{fmt.Sprintf("%s-%s", req.User.GetUID(), component.Name)}); err != nil {
+		if err := m.removeMCPServerAndCred(req.Context(), req.GatewayClient, component, []string{fmt.Sprintf("%s-%s", req.User.GetUID(), component.Name)}); err != nil {
 			return err
 		}
 	}
@@ -2202,7 +2200,7 @@ func (m *MCPHandler) deconfigureCompositeServer(req api.Context, compositeServer
 		return fmt.Errorf("failed to list component instances: %w", err)
 	}
 	for _, instance := range componentInstances.Items {
-		if err := DeleteCredentialIfExists(req.Context(), req.GPTClient, []string{MCPServerInstanceCredentialContext(instance)}, instance.Name); err != nil {
+		if err := DeleteCredentialIfExists(req.Context(), req.GatewayClient, []string{MCPServerInstanceCredentialContext(instance)}, instance.Name); err != nil {
 			return fmt.Errorf("failed to delete component instance configuration %s: %w", instance.Name, err)
 		}
 		_, serverConfig, err := serverFromMCPServerInstance(req, instance)
@@ -2220,7 +2218,7 @@ func (m *MCPHandler) deconfigureCompositeServer(req api.Context, compositeServer
 		scope   = req.User.GetUID()
 		credCtx = fmt.Sprintf("%s-%s", scope, compositeServer.Name)
 	)
-	if err := m.removeMCPServerAndCred(req.Context(), req.GPTClient, compositeServer, []string{credCtx}); err != nil {
+	if err := m.removeMCPServerAndCred(req.Context(), req.GatewayClient, compositeServer, []string{credCtx}); err != nil {
 		return err
 	}
 
@@ -2263,11 +2261,11 @@ func (m *MCPHandler) Reveal(req api.Context) error {
 	}
 
 	// Non-composite: return flat env
-	cred, err := req.GPTClient.RevealCredential(req.Context(), []string{credCtx}, mcpServer.Name)
-	if err != nil && !errors.As(err, &gptscript.ErrNotFound{}) {
+	cred, err := req.GatewayClient.RevealCredential(req.Context(), []string{credCtx}, mcpServer.Name)
+	if err != nil && !errors.As(err, &gateway.CredentialNotFoundError{}) {
 		return fmt.Errorf("failed to find credential: %w", err)
 	} else if err == nil {
-		return req.Write(cred.Env)
+		return req.Write(cred.Secrets)
 	}
 
 	return types.NewErrNotFound("no credential found for %q", mcpServer.Name)
@@ -2314,17 +2312,17 @@ func (m *MCPHandler) revealCompositeServer(req api.Context, compositeServer v1.M
 
 	// For each component, reveal its credential context and URL
 	for _, component := range componentServers.Items {
-		cred, err := req.GPTClient.RevealCredential(
+		cred, err := req.GatewayClient.RevealCredential(
 			req.Context(),
 			[]string{fmt.Sprintf("%s-%s", req.User.GetUID(), component.Name)},
 			component.Name,
 		)
-		if err != nil && !errors.As(err, &gptscript.ErrNotFound{}) {
+		if err != nil && !errors.As(err, &gateway.CredentialNotFoundError{}) {
 			return fmt.Errorf("failed to find credential for component %s: %w", component.Name, err)
 		}
 
 		cfg := map[string]string{}
-		for k, v := range cred.Env {
+		for k, v := range cred.Secrets {
 			if v != "" {
 				cfg[k] = v
 			}
@@ -2344,18 +2342,18 @@ func (m *MCPHandler) revealCompositeServer(req api.Context, compositeServer v1.M
 	}
 
 	for _, instance := range componentInstances.Items {
-		cred, err := req.GPTClient.RevealCredential(
+		cred, err := req.GatewayClient.RevealCredential(
 			req.Context(),
 			[]string{MCPServerInstanceCredentialContext(instance)},
 			instance.Name,
 		)
-		if err != nil && !errors.As(err, &gptscript.ErrNotFound{}) {
+		if err != nil && !errors.As(err, &gateway.CredentialNotFoundError{}) {
 			return fmt.Errorf("failed to find credential for component instance %s: %w", instance.Name, err)
 		}
 
 		mcpServerID := instance.Spec.MCPServerName
 		result[mcpServerID] = componentConfig{
-			Config:   cred.Env,
+			Config:   cred.Secrets,
 			Disabled: disabledComponents[mcpServerID],
 		}
 	}
@@ -2399,9 +2397,9 @@ func (m *MCPHandler) removeMCPServer(ctx context.Context, mcpServer v1.MCPServer
 	return nil
 }
 
-func (m *MCPHandler) removeMCPServerAndCred(ctx context.Context, gptClient *gptscript.GPTScript, mcpServer v1.MCPServer, credCtx []string) error {
+func (m *MCPHandler) removeMCPServerAndCred(ctx context.Context, gatewayClient *gateway.Client, mcpServer v1.MCPServer, credCtx []string) error {
 	// Delete credential if it exists
-	if err := DeleteCredentialIfExists(ctx, gptClient, credCtx, mcpServer.Name); err != nil {
+	if err := DeleteCredentialIfExists(ctx, gatewayClient, credCtx, mcpServer.Name); err != nil {
 		return err
 	}
 
@@ -2773,13 +2771,13 @@ func resolveCompositeComponents(req api.Context, composite v1.MCPServer) ([]type
 	}
 
 	for _, component := range componentServers.Items {
-		cred, err := req.GPTClient.RevealCredential(req.Context(), []string{fmt.Sprintf("%s-%s", component.Spec.UserID, component.Name)}, component.Name)
-		if err != nil && !errors.As(err, &gptscript.ErrNotFound{}) {
+		cred, err := req.GatewayClient.RevealCredential(req.Context(), []string{fmt.Sprintf("%s-%s", component.Spec.UserID, component.Name)}, component.Name)
+		if err != nil && !errors.As(err, &gateway.CredentialNotFoundError{}) {
 			return nil, fmt.Errorf("failed to reveal credential for component %s: %w", component.Name, err)
 		}
 
 		addExtractedEnvVars(&component)
-		mergedEnv, err := mcp.MergeBoundCreds(req.Context(), req.LocalK8sClient, req.ObotNamespace, component.Spec.Manifest.Env, component.Spec.Manifest.RemoteConfig, cred.Env)
+		mergedEnv, err := mcp.MergeBoundCreds(req.Context(), req.LocalK8sClient, req.ObotNamespace, component.Spec.Manifest.Env, component.Spec.Manifest.RemoteConfig, cred.Secrets)
 		if err != nil {
 			return nil, fmt.Errorf("failed to resolve secret bindings for component %s: %w", component.Name, err)
 		}
@@ -2850,7 +2848,7 @@ func (m *MCPHandler) ListServersFromAllSources(req api.Context) error {
 		}
 	}
 
-	creds, err := req.GPTClient.ListCredentials(req.Context(), gptscript.ListCredentialsOptions{
+	creds, err := req.GatewayClient.ListCredentials(req.Context(), gateway.ListCredentialsOptions{
 		CredentialContexts: credCtxs,
 	})
 	if err != nil {
@@ -2859,12 +2857,12 @@ func (m *MCPHandler) ListServersFromAllSources(req api.Context) error {
 
 	credMap := make(map[string]map[string]string, len(creds))
 	for _, cred := range creds {
-		if _, ok := credMap[cred.ToolName]; !ok {
-			c, err := req.GPTClient.RevealCredential(req.Context(), []string{cred.Context}, cred.ToolName)
-			if err != nil && !errors.As(err, &gptscript.ErrNotFound{}) {
+		if _, ok := credMap[cred.Name]; !ok {
+			c, err := req.GatewayClient.RevealCredential(req.Context(), []string{cred.Context}, cred.Name)
+			if err != nil && !errors.As(err, &gateway.CredentialNotFoundError{}) {
 				return fmt.Errorf("failed to find credential: %w", err)
 			}
-			credMap[cred.ToolName] = c.Env
+			credMap[cred.Name] = c.Secrets
 		}
 	}
 
@@ -2960,8 +2958,8 @@ func (m *MCPHandler) GetServerFromAllSources(req api.Context) error {
 		credCtxs = []string{fmt.Sprintf("%s-%s", server.Spec.PowerUserWorkspaceID, server.Name)}
 	}
 
-	cred, err := req.GPTClient.RevealCredential(req.Context(), credCtxs, server.Name)
-	if err != nil && !errors.As(err, &gptscript.ErrNotFound{}) {
+	cred, err := req.GatewayClient.RevealCredential(req.Context(), credCtxs, server.Name)
+	if err != nil && !errors.As(err, &gateway.CredentialNotFoundError{}) {
 		return fmt.Errorf("failed to find credential: %w", err)
 	}
 
@@ -2979,7 +2977,7 @@ func (m *MCPHandler) GetServerFromAllSources(req api.Context) error {
 		// Don't fail if catalog entry is missing, just continue without preview
 	}
 
-	mergedEnv, err := mcp.MergeBoundCreds(req.Context(), req.LocalK8sClient, req.ObotNamespace, server.Spec.Manifest.Env, server.Spec.Manifest.RemoteConfig, cred.Env)
+	mergedEnv, err := mcp.MergeBoundCreds(req.Context(), req.LocalK8sClient, req.ObotNamespace, server.Spec.Manifest.Env, server.Spec.Manifest.RemoteConfig, cred.Secrets)
 	if err != nil {
 		return fmt.Errorf("failed to resolve secret bindings: %w", err)
 	}
@@ -3333,12 +3331,12 @@ func (m *MCPHandler) RedeployWithK8sSettings(req api.Context) error {
 		credCtxs = append(credCtxs, fmt.Sprintf("%s-%s", server.Spec.UserID, server.Name))
 	}
 
-	cred, err := req.GPTClient.RevealCredential(req.Context(), credCtxs, server.Name)
-	if err != nil && !errors.As(err, &gptscript.ErrNotFound{}) {
+	cred, err := req.GatewayClient.RevealCredential(req.Context(), credCtxs, server.Name)
+	if err != nil && !errors.As(err, &gateway.CredentialNotFoundError{}) {
 		return fmt.Errorf("failed to find credential: %w", err)
 	}
 
-	mergedEnv, err := mcp.MergeBoundCreds(req.Context(), req.LocalK8sClient, req.ObotNamespace, server.Spec.Manifest.Env, server.Spec.Manifest.RemoteConfig, cred.Env)
+	mergedEnv, err := mcp.MergeBoundCreds(req.Context(), req.LocalK8sClient, req.ObotNamespace, server.Spec.Manifest.Env, server.Spec.Manifest.RemoteConfig, cred.Secrets)
 	if err != nil {
 		return fmt.Errorf("failed to resolve secret bindings: %w", err)
 	}

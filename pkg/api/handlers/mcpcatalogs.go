@@ -9,7 +9,6 @@ import (
 	"sort"
 	"strings"
 
-	"github.com/gptscript-ai/go-gptscript"
 	"github.com/gptscript-ai/gptscript/pkg/hash"
 	"github.com/obot-platform/nah/pkg/name"
 	"github.com/obot-platform/obot/apiclient/types"
@@ -17,6 +16,7 @@ import (
 	"github.com/obot-platform/obot/pkg/api"
 	mcpcataloghandler "github.com/obot-platform/obot/pkg/controller/handlers/mcpcatalog"
 	gclient "github.com/obot-platform/obot/pkg/gateway/client"
+	gatewaytypes "github.com/obot-platform/obot/pkg/gateway/types"
 	"github.com/obot-platform/obot/pkg/mcp"
 	v1 "github.com/obot-platform/obot/pkg/storage/apis/obot.obot.ai/v1"
 	"github.com/obot-platform/obot/pkg/system"
@@ -124,12 +124,12 @@ func (h *MCPCatalogHandler) Update(req api.Context) error {
 	}
 
 	// Reveal the existing single credential that holds all source-URL tokens.
-	existingCred, err := req.GPTClient.RevealCredential(req.Context(), []string{catalog.Name}, mcpcataloghandler.CatalogCredentialToolName)
-	if err != nil && !errors.As(err, &gptscript.ErrNotFound{}) {
+	existingCred, err := req.GatewayClient.RevealCredential(req.Context(), []string{catalog.Name}, mcpcataloghandler.CatalogCredentialToolName)
+	if err != nil && !errors.As(err, &gclient.CredentialNotFoundError{}) {
 		return fmt.Errorf("failed to reveal catalog credentials: %w", err)
 	}
 
-	newTokens := mergeCatalogTokens(manifest.SourceURLs, manifest.SourceURLCredentials, existingCred.Env)
+	newTokens := mergeCatalogTokens(manifest.SourceURLs, manifest.SourceURLCredentials, existingCred.Secrets)
 
 	catalog.Spec.SourceURLs = manifest.SourceURLs
 
@@ -137,7 +137,7 @@ func (h *MCPCatalogHandler) Update(req api.Context) error {
 		return fmt.Errorf("failed to update catalog: %w", err)
 	}
 
-	if err := storeCatalogTokens(req, catalog.Name, newTokens, existingCred.Env); err != nil {
+	if err := storeCatalogTokens(req, catalog.Name, newTokens, existingCred.Secrets); err != nil {
 		return err
 	}
 
@@ -474,12 +474,12 @@ func (h *MCPCatalogHandler) AdminListServersForEntryInCatalog(req api.Context) e
 		} else {
 			credCtx = fmt.Sprintf("%s-%s", server.Spec.UserID, server.Name)
 		}
-		cred, err := req.GPTClient.RevealCredential(req.Context(), []string{credCtx}, server.Name)
-		if err != nil && !errors.As(err, &gptscript.ErrNotFound{}) {
+		cred, err := req.GatewayClient.RevealCredential(req.Context(), []string{credCtx}, server.Name)
+		if err != nil && !errors.As(err, &gclient.CredentialNotFoundError{}) {
 			return fmt.Errorf("failed to find credential: %w", err)
 		}
 
-		mergedEnv, err := mcp.MergeBoundCreds(req.Context(), req.LocalK8sClient, req.ObotNamespace, server.Spec.Manifest.Env, server.Spec.Manifest.RemoteConfig, cred.Env)
+		mergedEnv, err := mcp.MergeBoundCreds(req.Context(), req.LocalK8sClient, req.ObotNamespace, server.Spec.Manifest.Env, server.Spec.Manifest.RemoteConfig, cred.Secrets)
 		if err != nil {
 			return fmt.Errorf("failed to resolve secret bindings: %w", err)
 		}
@@ -559,12 +559,12 @@ func (h *MCPCatalogHandler) AdminListServersForAllEntriesInCatalog(req api.Conte
 		} else {
 			credCtx = fmt.Sprintf("%s-%s", server.Spec.UserID, server.Name)
 		}
-		cred, err := req.GPTClient.RevealCredential(req.Context(), []string{credCtx}, server.Name)
-		if err != nil && !errors.As(err, &gptscript.ErrNotFound{}) {
+		cred, err := req.GatewayClient.RevealCredential(req.Context(), []string{credCtx}, server.Name)
+		if err != nil && !errors.As(err, &gclient.CredentialNotFoundError{}) {
 			return fmt.Errorf("failed to find credential: %w", err)
 		}
 
-		mergedEnv, err := mcp.MergeBoundCreds(req.Context(), req.LocalK8sClient, req.ObotNamespace, server.Spec.Manifest.Env, server.Spec.Manifest.RemoteConfig, cred.Env)
+		mergedEnv, err := mcp.MergeBoundCreds(req.Context(), req.LocalK8sClient, req.ObotNamespace, server.Spec.Manifest.Env, server.Spec.Manifest.RemoteConfig, cred.Secrets)
 		if err != nil {
 			return fmt.Errorf("failed to resolve secret bindings: %w", err)
 		}
@@ -640,12 +640,12 @@ func (h *MCPCatalogHandler) ListServersForEntry(req api.Context) error {
 		} else {
 			credCtx = fmt.Sprintf("%s-%s", server.Spec.UserID, server.Name)
 		}
-		cred, err := req.GPTClient.RevealCredential(req.Context(), []string{credCtx}, server.Name)
-		if err != nil && !errors.As(err, &gptscript.ErrNotFound{}) {
+		cred, err := req.GatewayClient.RevealCredential(req.Context(), []string{credCtx}, server.Name)
+		if err != nil && !errors.As(err, &gclient.CredentialNotFoundError{}) {
 			return fmt.Errorf("failed to find credential: %w", err)
 		}
 
-		mergedEnv, err := mcp.MergeBoundCreds(req.Context(), req.LocalK8sClient, req.ObotNamespace, server.Spec.Manifest.Env, server.Spec.Manifest.RemoteConfig, cred.Env)
+		mergedEnv, err := mcp.MergeBoundCreds(req.Context(), req.LocalK8sClient, req.ObotNamespace, server.Spec.Manifest.Env, server.Spec.Manifest.RemoteConfig, cred.Secrets)
 		if err != nil {
 			return fmt.Errorf("failed to resolve secret bindings: %w", err)
 		}
@@ -712,12 +712,12 @@ func (h *MCPCatalogHandler) GetServerFromEntry(req api.Context) error {
 	} else {
 		credCtx = fmt.Sprintf("%s-%s", server.Spec.UserID, server.Name)
 	}
-	cred, err := req.GPTClient.RevealCredential(req.Context(), []string{credCtx}, server.Name)
-	if err != nil && !errors.As(err, &gptscript.ErrNotFound{}) {
+	cred, err := req.GatewayClient.RevealCredential(req.Context(), []string{credCtx}, server.Name)
+	if err != nil && !errors.As(err, &gclient.CredentialNotFoundError{}) {
 		return fmt.Errorf("failed to find credential: %w", err)
 	}
 
-	mergedEnv, err := mcp.MergeBoundCreds(req.Context(), req.LocalK8sClient, req.ObotNamespace, server.Spec.Manifest.Env, server.Spec.Manifest.RemoteConfig, cred.Env)
+	mergedEnv, err := mcp.MergeBoundCreds(req.Context(), req.LocalK8sClient, req.ObotNamespace, server.Spec.Manifest.Env, server.Spec.Manifest.RemoteConfig, cred.Secrets)
 	if err != nil {
 		return fmt.Errorf("failed to resolve secret bindings: %w", err)
 	}
@@ -800,7 +800,7 @@ func (h *MCPCatalogHandler) GenerateToolPreviews(req api.Context) error {
 	}
 	server, serverConfig, err := tempServerAndConfig(
 		req.Context(),
-		req.GPTClient,
+		req.GatewayClient,
 		req.Storage,
 		req.LocalK8sClient,
 		req.ObotNamespace,
@@ -924,7 +924,7 @@ func (h *MCPCatalogHandler) generateCompositeToolPreviews(req api.Context, entry
 
 		server, serverConfig, err := tempServerAndConfig(
 			req.Context(),
-			req.GPTClient,
+			req.GatewayClient,
 			req.Storage,
 			req.LocalK8sClient,
 			req.ObotNamespace,
@@ -1056,7 +1056,7 @@ func (h *MCPCatalogHandler) GenerateToolPreviewsOAuthURL(req api.Context) error 
 	if catalogName == "" {
 		catalogName = entry.Spec.PowerUserWorkspaceID
 	}
-	server, serverConfig, err := tempServerAndConfig(req.Context(), req.GPTClient, req.Storage, req.LocalK8sClient, req.ObotNamespace, entry.Namespace, catalogName, entry.Spec.Manifest, configRequest.Config, configRequest.URL, h.serverURL)
+	server, serverConfig, err := tempServerAndConfig(req.Context(), req.GatewayClient, req.Storage, req.LocalK8sClient, req.ObotNamespace, entry.Namespace, catalogName, entry.Spec.Manifest, configRequest.Config, configRequest.URL, h.serverURL)
 	if err != nil {
 		return types.NewErrBadRequest("failed to create temporary server and config: %v", err)
 	}
@@ -1143,7 +1143,7 @@ func (h *MCPCatalogHandler) GenerateComponentToolPreviews(req api.Context) error
 	// Use the manifest snapshot embedded in the composite entry for this component.
 	server, serverConfig, err := tempServerAndConfig(
 		req.Context(),
-		req.GPTClient,
+		req.GatewayClient,
 		req.Storage,
 		req.LocalK8sClient,
 		req.ObotNamespace,
@@ -1267,7 +1267,7 @@ func (h *MCPCatalogHandler) GenerateComponentToolPreviewsOAuthURL(req api.Contex
 
 	server, serverConfig, err := tempServerAndConfig(
 		req.Context(),
-		req.GPTClient,
+		req.GatewayClient,
 		req.Storage,
 		req.LocalK8sClient,
 		req.ObotNamespace,
@@ -1350,7 +1350,7 @@ func (h *MCPCatalogHandler) generateCompositeOAuthURLs(req api.Context, entry v1
 
 		server, serverConfig, err := tempServerAndConfig(
 			req.Context(),
-			req.GPTClient,
+			req.GatewayClient,
 			req.Storage,
 			req.LocalK8sClient,
 			req.ObotNamespace,
@@ -1382,7 +1382,7 @@ func (h *MCPCatalogHandler) generateCompositeOAuthURLs(req api.Context, entry v1
 	return req.Write(oauthURLs)
 }
 
-func tempServerAndConfig(ctx context.Context, gptClient *gptscript.GPTScript, client client.Client, localK8sClient client.Client, obotNamespace, namespace, catalogName string, entryManifest types.MCPServerCatalogEntryManifest, config map[string]string, url, baseURL string) (v1.MCPServer, mcp.ServerConfig, error) {
+func tempServerAndConfig(ctx context.Context, gatewayClient *gclient.Client, client client.Client, localK8sClient client.Client, obotNamespace, namespace, catalogName string, entryManifest types.MCPServerCatalogEntryManifest, config map[string]string, url, baseURL string) (v1.MCPServer, mcp.ServerConfig, error) {
 	// Convert catalog entry to server manifest
 	serverManifest, err := types.MapCatalogEntryToServer(entryManifest, url, false)
 	if err != nil {
@@ -1420,11 +1420,10 @@ func tempServerAndConfig(ctx context.Context, gptClient *gptscript.GPTScript, cl
 		"TOKEN_EXCHANGE_CLIENT_ID":     fmt.Sprintf("%s:%s", namespace, clientID),
 		"TOKEN_EXCHANGE_CLIENT_SECRET": clientSecret,
 	}
-	if err := gptClient.CreateCredential(ctx, gptscript.Credential{
-		Context:  tempMCPServer.Name,
-		ToolName: tempMCPServer.Name,
-		Type:     gptscript.CredentialTypeTool,
-		Env:      tokenExchangeEnv,
+	if err := gatewayClient.UpsertCredential(ctx, gatewaytypes.Credential{
+		Context: tempMCPServer.Name,
+		Name:    tempMCPServer.Name,
+		Secrets: tokenExchangeEnv,
 	}); err != nil {
 		return v1.MCPServer{}, mcp.ServerConfig{}, fmt.Errorf("failed to create credential: %w", err)
 	}
@@ -1498,14 +1497,14 @@ func (h *MCPCatalogHandler) ListCategoriesForCatalog(req api.Context) error {
 // revealCatalogTokens returns the Env map from the single credential that stores
 // all source-URL tokens for a catalog. Returns an empty map if no credential exists.
 func revealCatalogTokens(req api.Context, catalogName string) (map[string]string, error) {
-	cred, err := req.GPTClient.RevealCredential(req.Context(), []string{catalogName}, mcpcataloghandler.CatalogCredentialToolName)
+	cred, err := req.GatewayClient.RevealCredential(req.Context(), []string{catalogName}, mcpcataloghandler.CatalogCredentialToolName)
 	if err != nil {
-		if errors.As(err, &gptscript.ErrNotFound{}) {
+		if errors.As(err, &gclient.CredentialNotFoundError{}) {
 			return nil, nil
 		}
 		return nil, fmt.Errorf("failed to reveal credentials for catalog %s: %w", catalogName, err)
 	}
-	return cred.Env, nil
+	return cred.Secrets, nil
 }
 
 func convertMCPCatalog(catalog v1.MCPCatalog, tokenEnv map[string]string) types.MCPCatalog {
@@ -1801,12 +1800,12 @@ func (h *MCPCatalogHandler) GetOAuthCredentials(req api.Context) error {
 
 	// Check if credentials exist
 	credName := system.MCPOAuthCredentialName(entry.Name)
-	cred, err := req.GPTClient.RevealCredential(req.Context(), []string{credName}, "oauth")
+	cred, err := req.GatewayClient.RevealCredential(req.Context(), []string{credName}, "oauth")
 	configured := err == nil
 
 	var clientID string
 	if configured {
-		clientID = cred.Env["CLIENT_ID"]
+		clientID = cred.Secrets["CLIENT_ID"]
 	}
 
 	return req.Write(types.MCPServerOAuthCredentialStatus{
@@ -1835,7 +1834,7 @@ func (h *MCPCatalogHandler) SetOAuthCredentials(req api.Context) error {
 
 	// Check if credentials already exist
 	credName := system.MCPOAuthCredentialName(entry.Name)
-	_, err = req.GPTClient.RevealCredential(req.Context(), []string{credName}, "oauth")
+	_, err = req.GatewayClient.RevealCredential(req.Context(), []string{credName}, "oauth")
 	credentialsExist := err == nil
 
 	var clientID, clientSecret string
@@ -1857,16 +1856,15 @@ func (h *MCPCatalogHandler) SetOAuthCredentials(req api.Context) error {
 	clientSecret = trimmedClientSecret
 
 	// Store new credential
-	cred := gptscript.Credential{
-		Context:  credName,
-		ToolName: "oauth",
-		Type:     gptscript.CredentialTypeTool,
-		Env: map[string]string{
+	cred := gatewaytypes.Credential{
+		Context: credName,
+		Name:    "oauth",
+		Secrets: map[string]string{
 			"CLIENT_ID":     clientID,
 			"CLIENT_SECRET": clientSecret,
 		},
 	}
-	if err := req.GPTClient.CreateCredential(req.Context(), cred); err != nil {
+	if err := req.GatewayClient.UpsertCredential(req.Context(), cred); err != nil {
 		return fmt.Errorf("failed to create OAuth credential: %w", err)
 	}
 
@@ -1899,11 +1897,9 @@ func (h *MCPCatalogHandler) DeleteOAuthCredentials(req api.Context) error {
 	}
 
 	credName := system.MCPOAuthCredentialName(entry.Name)
-	if err := req.GPTClient.DeleteCredential(req.Context(), credName, "oauth"); err != nil {
-		var notFound gptscript.ErrNotFound
-		if !errors.As(err, &notFound) {
-			return err
-		}
+	deleted, err := req.GatewayClient.DeleteCredential(req.Context(), credName, "oauth")
+	if err != nil {
+		return err
 	}
 
 	// Best-effort cleanup of per-user OAuth tokens associated with this catalog entry.
@@ -1927,5 +1923,5 @@ func (h *MCPCatalogHandler) DeleteOAuthCredentials(req api.Context) error {
 		return fmt.Errorf("failed to trigger reconciliation: %w", err)
 	}
 
-	return req.Write(map[string]bool{"deleted": true})
+	return req.Write(map[string]bool{"deleted": deleted})
 }
