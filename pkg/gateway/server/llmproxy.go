@@ -30,6 +30,7 @@ import (
 	v1 "github.com/obot-platform/obot/pkg/storage/apis/obot.obot.ai/v1"
 	"github.com/tidwall/gjson"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
+	"k8s.io/apimachinery/pkg/fields"
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/apiserver/pkg/authentication/user"
 	kclient "sigs.k8s.io/controller-runtime/pkg/client"
@@ -233,6 +234,47 @@ func getModelFromReference(ctx context.Context, client kclient.Client, namespace
 	}
 
 	return nil, apierrors.NewNotFound(schema.GroupResource{Group: v1.SchemeGroupVersion.Group, Resource: "model"}, modelReference)
+}
+
+// getModelByTargetForProvider finds the active v1.Model whose
+// Spec.Manifest.ModelProvider matches providerName and whose
+// Spec.Manifest.TargetModel matches targetModel.
+//
+// This is the lookup path for the public passthrough routes
+// (/api/llm-proxy/openai, /api/llm-proxy/anthropic) so external SDKs can
+// send the provider's native model id (e.g. "gpt-4o", "claude-sonnet-4-5")
+// rather than an Obot-internal alias or Kubernetes resource name.
+//
+// We don't expect more than one v1.Model with the same (provider,
+// targetModel) pair in practice, but as a defensive tiebreaker the most
+// recently created Model wins.
+func getModelByTargetForProvider(ctx context.Context, c kclient.Client, namespace, providerName, targetModel string) (*v1.Model, error) {
+	var models v1.ModelList
+	if err := c.List(ctx, &models, &kclient.ListOptions{
+		Namespace: namespace,
+		FieldSelector: fields.SelectorFromSet(fields.Set{
+			"spec.manifest.modelProvider": providerName,
+			"spec.manifest.targetModel":   targetModel,
+		}),
+	}); err != nil {
+		return nil, fmt.Errorf("failed to list models for provider %q: %w", providerName, err)
+	}
+
+	var newest *v1.Model
+	for i := range models.Items {
+		m := &models.Items[i]
+		if !m.Spec.Manifest.Active {
+			continue
+		}
+		if newest == nil || m.CreationTimestamp.After(newest.CreationTimestamp.Time) {
+			newest = m
+		}
+	}
+
+	if newest == nil {
+		return nil, apierrors.NewNotFound(schema.GroupResource{Group: v1.SchemeGroupVersion.Group, Resource: "model"}, targetModel)
+	}
+	return newest, nil
 }
 
 func envVarForModelProvider(modelProvider v1.ToolReference) (string, error) {
@@ -960,6 +1002,12 @@ func (l *llmProviderProxy) proxy(req api.Context) error {
 	targetModel := extractModelFromBody(body)
 	if targetModel != "" {
 		model, err := getModelFromReference(req.Context(), req.Storage, l.modelProvider.Namespace, targetModel)
+		if apierrors.IsNotFound(err) {
+			// Fall back to the provider-native model id (e.g. "gpt-4o",
+			// "claude-sonnet-4-5") so external SDKs hitting the passthrough
+			// routes don't have to know Obot's internal model names.
+			model, err = getModelByTargetForProvider(req.Context(), req.Storage, l.modelProvider.Namespace, l.modelProvider.Name, targetModel)
+		}
 		if err != nil {
 			return fmt.Errorf("failed to get model: %w", err)
 		}

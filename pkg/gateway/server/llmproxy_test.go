@@ -379,6 +379,119 @@ func TestLLMTransformRequest_RemovesInternalRequestTypeHeader(t *testing.T) {
 	}
 }
 
+// TestLLMTransformRequest_UpstreamPath asserts the upstream URL.Path produced
+// by llmTransformRequest for every (base URL, reqPath) combination the proxy
+// should support. Every reqPath is grounded in real source — either nanobot
+// (nanobot/pkg/llm/{anthropic,responses,completions,bifrost}/client.go) or the
+// official SDK each documented external coding tool uses.
+//
+// The expected paths are also what modifyResponse in llmproxy.go checks against
+// (/v1/messages and /v1/responses) for token counting and policy enforcement.
+func TestLLMTransformRequest_UpstreamPath(t *testing.T) {
+	tests := []struct {
+		name    string
+		baseURL string
+		reqPath string
+		want    string
+	}{
+		// --- Nanobot dialects (exact suffixes from nanobot source) ---
+		// nanobot/pkg/llm/anthropic/client.go → BaseURL + "/messages"
+		{
+			name:    "nanobot AnthropicMessages dialect",
+			baseURL: "https://api.anthropic.com/v1",
+			reqPath: "messages",
+			want:    "/v1/messages",
+		},
+		// nanobot/pkg/llm/responses/client.go → BaseURL + "/responses"
+		{
+			name:    "nanobot OpenAIResponses dialect",
+			baseURL: "https://api.openai.com/v1",
+			reqPath: "responses",
+			want:    "/v1/responses",
+		},
+		// nanobot/pkg/llm/client.go: OpenResponses uses the responses client
+		{
+			name:    "nanobot OpenResponses dialect (dispatch)",
+			baseURL: "http://127.0.0.1:8080",
+			reqPath: "responses",
+			want:    "/v1/responses",
+		},
+		// nanobot/pkg/llm/completions/client.go → BaseURL + "/chat/completions"
+		{
+			name:    "nanobot OpenAIChatCompletions dialect (dispatch)",
+			baseURL: "http://127.0.0.1:8080",
+			reqPath: "chat/completions",
+			want:    "/v1/chat/completions",
+		},
+		// nanobot/pkg/llm/bifrost/client.go → BaseURL + "/v1/responses"
+		{
+			name:    "nanobot BifrostRequest dialect (dispatch)",
+			baseURL: "http://127.0.0.1:8080",
+			reqPath: "v1/responses",
+			want:    "/v1/responses",
+		},
+
+		// --- External coding tools pointed at the passthrough routes ---
+		// Claude Code uses the official Anthropic SDK; its default base URL is
+		// "https://api.anthropic.com" (no /v1) and the SDK appends /v1/messages.
+		// With base=…/api/llm-proxy/anthropic, the mux captures "v1/messages".
+		{
+			name:    "Claude Code → /api/llm-proxy/anthropic",
+			baseURL: "https://api.anthropic.com/v1",
+			reqPath: "v1/messages",
+			want:    "/v1/messages",
+		},
+		// OpenCode's Anthropic provider (Vercel AI SDK) is documented with base
+		// "https://api.anthropic.com/v1" and appends "/messages". Pointed at
+		// base=…/api/llm-proxy/anthropic/v1 the mux still captures "v1/messages".
+		{
+			name:    "OpenCode (Anthropic via Vercel AI SDK) → /api/llm-proxy/anthropic/v1",
+			baseURL: "https://api.anthropic.com/v1",
+			reqPath: "v1/messages",
+			want:    "/v1/messages",
+		},
+		// OpenAI Python/TS SDKs default to base="https://api.openai.com/v1" and
+		// append "/responses". Pointed at base=…/api/llm-proxy/openai/v1 → mux
+		// captures "v1/responses".
+		{
+			name:    "OpenAI SDK (Responses API) → /api/llm-proxy/openai/v1",
+			baseURL: "https://api.openai.com/v1",
+			reqPath: "v1/responses",
+			want:    "/v1/responses",
+		},
+		// Same SDK, chat completions endpoint.
+		{
+			name:    "OpenAI SDK (Chat Completions) → /api/llm-proxy/openai/v1",
+			baseURL: "https://api.openai.com/v1",
+			reqPath: "v1/chat/completions",
+			want:    "/v1/chat/completions",
+		},
+		// OpenAI SDK list-models endpoint (GET /v1/models).
+		{
+			name:    "OpenAI SDK (list models) → /api/llm-proxy/openai/v1",
+			baseURL: "https://api.openai.com/v1",
+			reqPath: "v1/models",
+			want:    "/v1/models",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			u := mustParseURL(tt.baseURL)
+			director := llmTransformRequest(*u, nil)
+
+			req := httptest.NewRequest(http.MethodPost, "http://gateway.local/", nil)
+			req.SetPathValue("path", tt.reqPath)
+
+			director(req)
+
+			if got := req.URL.Path; got != tt.want {
+				t.Fatalf("URL.Path = %q, want %q", got, tt.want)
+			}
+		})
+	}
+}
+
 func TestExtractContentString(t *testing.T) {
 	tests := []struct {
 		name    string
