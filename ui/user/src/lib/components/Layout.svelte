@@ -26,6 +26,7 @@
 	import {
 		AlarmClock,
 		Boxes,
+		BrainCog,
 		Captions,
 		ChartBarDecreasing,
 		ChevronDown,
@@ -432,6 +433,21 @@
 						]
 					},
 					{
+						id: 'llm-gateway',
+						icon: BrainCog,
+						label: 'LLM Gateway',
+						collapsible: true,
+						items: [
+							{
+								id: 'llm-gateway-models',
+								href: '/llm-gateway/models',
+								icon: Boxes,
+								label: 'Models',
+								collapsible: false
+							}
+						]
+					},
+					{
 						id: 'app-preferences',
 						href: '/admin/app-preferences',
 						icon: Palette,
@@ -493,6 +509,21 @@
 						icon: PencilRuler,
 						label: 'Skills',
 						collapsible: false
+					},
+					{
+						id: 'llm-gateway',
+						icon: BrainCog,
+						label: 'LLM Gateway',
+						collapsible: true,
+						items: [
+							{
+								id: 'llm-gateway-models',
+								href: '/llm-gateway/models',
+								icon: Boxes,
+								label: 'Models',
+								collapsible: false
+							}
+						]
 					},
 					...chatLinks
 				]
