@@ -31,10 +31,8 @@ export const claudeCodeClient: ClientConfig = {
 	label: 'Claude Code',
 	render(ctx: RenderContext): SnippetBlock[] {
 		const code = [
-			exportObotApiKey(ctx.obotURL),
-			'',
 			`export ANTHROPIC_BASE_URL="${ctx.baseURL}"`,
-			`export ANTHROPIC_API_KEY="$${OBOT_API_KEY_ENV}"`,
+			`export ANTHROPIC_API_KEY="${loginSubstitution(ctx.obotURL)}"`,
 			'export CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY=1',
 			'',
 			'claude'
