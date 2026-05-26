@@ -23,18 +23,19 @@
 		data.models.filter((m) => m.modelProvider === CommonModelProviderIds.ANTHROPIC)
 	);
 
-	function buildCtx(shortKey: 'openai' | 'anthropic', firstModelName?: string): RenderContext {
+	function buildCtx(shortKey: 'openai' | 'anthropic', models: typeof data.models): RenderContext {
 		const provider = PROVIDER_CONNECTIONS[shortKey];
 		return {
 			provider,
 			obotURL,
 			baseURL: `${obotURL}/api/llm-proxy/${provider.shortKey}`,
-			exampleModel: firstModelName
+			models,
+			exampleModel: models[0]?.name
 		};
 	}
 
-	let openaiCtx = $derived(buildCtx('openai', openaiModels[0]?.name));
-	let anthropicCtx = $derived(buildCtx('anthropic', anthropicModels[0]?.name));
+	let openaiCtx = $derived(buildCtx('openai', openaiModels));
+	let anthropicCtx = $derived(buildCtx('anthropic', anthropicModels));
 
 	let hasAny = $derived(openaiModels.length > 0 || anthropicModels.length > 0);
 	let ready = $derived(obotURL !== '');
