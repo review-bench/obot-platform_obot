@@ -290,9 +290,18 @@ var (
 			"GET /api/projects",
 
 			// Device scans: any authenticated user can submit a scan via
-			// `obot scan`. Reads are admin/owner/auditor-only, gated by
-			// the rules above.
+			// `obot scan` and read the scans they themselves submitted.
+			// The List and Get handlers clamp results to
+			// SubmittedBy == req.User.GetUID() for non-privileged
+			// callers; admin/owner/auditor see all (gated by the rules
+			// above). The fleet aggregate endpoints
+			// (/api/devices/scan-stats, /api/devices/mcp-servers/,
+			// /api/devices/skills, /api/devices/clients) remain
+			// admin/owner/auditor-only because they are inherently
+			// cross-user.
 			"POST /api/devices/scans",
+			"GET /api/devices/scans",
+			"GET /api/devices/scans/{scan_id}",
 		},
 
 		types.GroupPowerUserPlus: {
